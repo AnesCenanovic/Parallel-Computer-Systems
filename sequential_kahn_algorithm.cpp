@@ -1,6 +1,7 @@
 #include <iostream>
 #include <vector>
 #include <queue>
+#include <chrono>
 
 std::vector<int> topological_sort_kahn(const std::vector<std::vector<int>>& adj) {
     int n = adj.size();
@@ -43,24 +44,29 @@ std::vector<int> topological_sort_kahn(const std::vector<std::vector<int>>& adj)
     return order;
 }
 
+std::vector<std::vector<int>> generate_large_dag(int n, int edges_per_node = 10) {
+    std::vector<std::vector<int>> adj(n);
+    for (int u = 0; u < n; ++u) {
+        for (int i = 1; i <= edges_per_node; ++i) {
+            int v = u + i;
+            if (v < n)
+                adj[u].push_back(v);
+        }
+    }
+    return adj;
+}
+
 int main() {
-    // Example: 6 nodes (0–5)
-    // 5 → 0, 5 → 2, 4 → 0, 4 → 1, 2 → 3, 3 → 1
-    std::vector<std::vector<int>> adj = {
-        {},       // 0
-        {},       // 1
-        {3},      // 2
-        {1},      // 3
-        {0, 1},   // 4
-        {0, 2}    // 5
-    };
+    int num_nodes = 10000000;
+    auto adj = generate_large_dag(num_nodes);
 
-    std::vector<int> result = topological_sort_kahn(adj);
+    auto start = std::chrono::high_resolution_clock::now();
+    auto result = topological_sort_kahn(adj);
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> duration = end - start;
 
-    std::cout << "Topological order: ";
-    for (int v : result)
-        std::cout << v << " ";
-    std::cout << "\n";
+    std::cout << "Topological sort completed in " << duration.count() << " seconds.\n";
+    std::cout << "Sorted " << result.size() << " nodes.\n";
 
     return 0;
 }
