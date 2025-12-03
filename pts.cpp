@@ -11,9 +11,6 @@
 #include <immintrin.h>
 #include <cstring>
 
-// =============================================================================
-// COMPRESSED SPARSE ROW (CSR) STRUCTURE
-// =============================================================================
 struct CSRGraph {
     std::vector<int> row_offsets;
     std::vector<int> flat_adj;
@@ -54,9 +51,6 @@ CSRGraph convert_to_csr(const std::vector<std::vector<int>>& adj, bool parallel)
     return g;
 }
 
-// =============================================================================
-// SERIAL BASELINE (Optimized with CSR + Prefetching)
-// =============================================================================
 std::vector<int> topological_sort_serial(const std::vector<std::vector<int>>& raw_adj) {
     CSRGraph g = convert_to_csr(raw_adj, false);
     int n = g.n;
@@ -104,23 +98,20 @@ std::vector<int> topological_sort_serial(const std::vector<std::vector<int>>& ra
     return order;
 }
 
-// =============================================================================
-// PARALLEL FINAL (CSR + Relaxed Atomics + Manual Unrolling + Prefetching)
-// =============================================================================
+
 std::vector<int> topological_sort_parallel(const std::vector<std::vector<int>>& raw_adj) {
-    // 1. Convert to CSR (Fixes Spatial Locality)
+
     CSRGraph g = convert_to_csr(raw_adj, true);
     int n = g.n;
     
     std::vector<std::atomic<int>> indegree(n);
     
-    // 2. Parallel Initialization
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < n; ++i) {
         indegree[i].store(0, std::memory_order_relaxed);
     }
     
-    // 3. Parallel Indegree Count (Linear Memory Access)
+
     #pragma omp parallel for schedule(static)
     for (size_t i = 0; i < g.flat_adj.size(); ++i) {
         indegree[g.flat_adj[i]].fetch_add(1, std::memory_order_relaxed);
@@ -129,7 +120,6 @@ std::vector<int> topological_sort_parallel(const std::vector<std::vector<int>>& 
     std::vector<int> frontier;
     frontier.reserve(n);
     
-    // 4. Initial Scan
     #pragma omp parallel
     {
         std::vector<int> local_frontier;
@@ -152,16 +142,15 @@ std::vector<int> topological_sort_parallel(const std::vector<std::vector<int>>& 
         order.insert(order.end(), frontier.begin(), frontier.end());
         
         if (frontier.size() >= PARALLEL_THRESHOLD) {
-            // --- PARALLEL PATH ---
             const int num_threads = omp_get_max_threads();
+            
             std::vector<std::vector<int>> thread_next(num_threads);
             
             #pragma omp parallel
             {
                 int tid = omp_get_thread_num();
                 thread_next[tid].reserve(frontier.size() / num_threads + 128);
-                
-                // Dynamic schedule handles uneven workloads (power-law graphs)
+
                 #pragma omp for schedule(dynamic, 32) nowait
                 for (size_t i = 0; i < frontier.size(); ++i) {
                     int u = frontier[i];
@@ -171,12 +160,10 @@ std::vector<int> topological_sort_parallel(const std::vector<std::vector<int>>& 
                     for (int j = start; j < end; ++j) {
                         int v = g.flat_adj[j];
                         
-                        // Prefetch 'write' intent for future neighbors
                         if (j + 4 < end) {
                             _mm_prefetch((const char*)&indegree[g.flat_adj[j+4]], _MM_HINT_T0);
                         }
                         
-                        // Relaxed ordering is sufficient for correctness and fastest
                         if (indegree[v].fetch_sub(1, std::memory_order_relaxed) == 1) {
                             thread_next[tid].push_back(v);
                         }
@@ -184,7 +171,6 @@ std::vector<int> topological_sort_parallel(const std::vector<std::vector<int>>& 
                 }
             }
             
-            // Merge thread-local results
             std::vector<int> next_frontier;
             for (const auto& local : thread_next) {
                 next_frontier.insert(next_frontier.end(), local.begin(), local.end());
@@ -192,7 +178,6 @@ std::vector<int> topological_sort_parallel(const std::vector<std::vector<int>>& 
             frontier = std::move(next_frontier);
             
         } else {
-            // --- SERIAL FALLBACK (Small Frontier) ---
             std::vector<int> next_frontier;
             for (int u : frontier) {
                 int start = g.row_offsets[u];
@@ -336,7 +321,9 @@ int main(int argc, char* argv[]) {
     std::string algo = argv[1];
     std::string graph_type = argv[2];
 
-    omp_set_num_threads(8);
+    // Optimized for i7-10510U (4 Physical Cores). 
+    // Remove or change this if running on a high-core-count server.
+    omp_set_num_threads(4);
     
     // Default Parameters (20M nodes)
     int num_nodes = 20000000;
