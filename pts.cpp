@@ -10,7 +10,6 @@
 #include <omp.h>
 #include <immintrin.h>
 #include <cstring>
-#include <unordered_map>
 
 // =============================================================================
 // COMPRESSED SPARSE ROW (CSR) STRUCTURE
@@ -21,6 +20,7 @@ struct CSRGraph {
     int n;
 };
 
+// Converts vector<vector> to Flat Array (CSR) to fix Cache Misses
 CSRGraph convert_to_csr(const std::vector<std::vector<int>>& adj, bool parallel) {
     int n = adj.size();
     CSRGraph g;
@@ -55,7 +55,7 @@ CSRGraph convert_to_csr(const std::vector<std::vector<int>>& adj, bool parallel)
 }
 
 // =============================================================================
-// SERIAL BASELINE (Your Best Sequential)
+// SERIAL BASELINE (Optimized with CSR + Prefetching)
 // =============================================================================
 std::vector<int> topological_sort_serial(const std::vector<std::vector<int>>& raw_adj) {
     CSRGraph g = convert_to_csr(raw_adj, false);
@@ -90,6 +90,7 @@ std::vector<int> topological_sort_serial(const std::vector<std::vector<int>>& ra
         for (int j = start; j < end; ++j) {
             int v = g.flat_adj[j];
             
+            // Prefetch next iterations to hide DRAM latency
             if (j + 8 < end) {
                 _mm_prefetch((const char*)&indegree[g.flat_adj[j+8]], _MM_HINT_T0);
             }
@@ -104,154 +105,22 @@ std::vector<int> topological_sort_serial(const std::vector<std::vector<int>>& ra
 }
 
 // =============================================================================
-// PARALLEL V1: SPARSE DELTA (Fixed Memory Issue)
-// Key: Only store deltas for nodes actually touched
+// PARALLEL FINAL (CSR + Relaxed Atomics + Manual Unrolling + Prefetching)
 // =============================================================================
-std::vector<int> topological_sort_parallel_sparse(const std::vector<std::vector<int>>& raw_adj) {
+std::vector<int> topological_sort_parallel(const std::vector<std::vector<int>>& raw_adj) {
+    // 1. Convert to CSR (Fixes Spatial Locality)
     CSRGraph g = convert_to_csr(raw_adj, true);
     int n = g.n;
     
-    const int num_threads = omp_get_max_threads();
-    
-    // Parallel indegree calculation
-    std::vector<int> indegree(n, 0);
-    
-    #pragma omp parallel
-    {
-        std::vector<int> local_indegree(n, 0);
-        
-        #pragma omp for schedule(static) nowait
-        for (size_t i = 0; i < g.flat_adj.size(); ++i) {
-            local_indegree[g.flat_adj[i]]++;
-        }
-        
-        #pragma omp critical
-        for (int v = 0; v < n; ++v) {
-            indegree[v] += local_indegree[v];
-        }
-    }
-    
-    // Find initial frontier
-    std::vector<int> frontier;
-    frontier.reserve(n);
-    
-    #pragma omp parallel
-    {
-        std::vector<int> local_frontier;
-        #pragma omp for schedule(static) nowait
-        for (int i = 0; i < n; ++i) {
-            if (indegree[i] == 0) {
-                local_frontier.push_back(i);
-            }
-        }
-        #pragma omp critical
-        frontier.insert(frontier.end(), local_frontier.begin(), local_frontier.end());
-    }
-    
-    std::vector<int> order;
-    order.reserve(n);
-    
-    const int PARALLEL_THRESHOLD = 4096;
-    
-    // BFS with SPARSE delta tracking
-    while (!frontier.empty()) {
-        order.insert(order.end(), frontier.begin(), frontier.end());
-        
-        if (frontier.size() >= PARALLEL_THRESHOLD) {
-            // Use SPARSE storage: only store deltas for touched nodes
-            std::vector<std::unordered_map<int, int>> thread_deltas(num_threads);
-            std::vector<std::vector<int>> thread_next(num_threads);
-            
-            #pragma omp parallel
-            {
-                int tid = omp_get_thread_num();
-                auto& local_deltas = thread_deltas[tid];
-                auto& local_next = thread_next[tid];
-                
-                #pragma omp for schedule(dynamic, 64) nowait
-                for (size_t i = 0; i < frontier.size(); ++i) {
-                    int u = frontier[i];
-                    int start = g.row_offsets[u];
-                    int end = g.row_offsets[u+1];
-                    
-                    for (int j = start; j < end; ++j) {
-                        int v = g.flat_adj[j];
-                        local_deltas[v]++;  // Sparse: only touched nodes
-                    }
-                }
-                
-                #pragma omp barrier
-                
-                // Each thread processes a partition
-                #pragma omp for schedule(static)
-                for (int v = 0; v < n; ++v) {
-                    int total_delta = 0;
-                    for (int t = 0; t < num_threads; ++t) {
-                        auto it = thread_deltas[t].find(v);
-                        if (it != thread_deltas[t].end()) {
-                            total_delta += it->second;
-                        }
-                    }
-                    
-                    if (total_delta > 0) {
-                        indegree[v] -= total_delta;
-                        if (indegree[v] == 0) {
-                            local_next.push_back(v);
-                        }
-                    }
-                }
-            }
-            
-            std::vector<int> next_frontier;
-            for (const auto& local : thread_next) {
-                next_frontier.insert(next_frontier.end(), local.begin(), local.end());
-            }
-            frontier = std::move(next_frontier);
-            
-        } else {
-            // Serial for small frontiers
-            std::vector<int> next_frontier;
-            
-            for (int u : frontier) {
-                int start = g.row_offsets[u];
-                int end = g.row_offsets[u+1];
-                
-                for (int j = start; j < end; ++j) {
-                    int v = g.flat_adj[j];
-                    
-                    if (j + 8 < end) {
-                        _mm_prefetch((const char*)&indegree[g.flat_adj[j+8]], _MM_HINT_T0);
-                    }
-                    
-                    if (--indegree[v] == 0) {
-                        next_frontier.push_back(v);
-                    }
-                }
-            }
-            
-            frontier = std::move(next_frontier);
-        }
-    }
-    
-    return order;
-}
-
-// =============================================================================
-// PARALLEL V2: OPTIMIZED ATOMICS (Your Current Best)
-// Improvements: Better scheduling, reduced padding, smarter thresholds
-// =============================================================================
-std::vector<int> topological_sort_parallel_atomic(const std::vector<std::vector<int>>& raw_adj) {
-    CSRGraph g = convert_to_csr(raw_adj, true);
-    int n = g.n;
-    
-    // Regular atomics (no padding - your V2 proves padding isn't the bottleneck)
     std::vector<std::atomic<int>> indegree(n);
     
+    // 2. Parallel Initialization
     #pragma omp parallel for schedule(static)
     for (int i = 0; i < n; ++i) {
         indegree[i].store(0, std::memory_order_relaxed);
     }
     
+    // 3. Parallel Indegree Count (Linear Memory Access)
     #pragma omp parallel for schedule(static)
     for (size_t i = 0; i < g.flat_adj.size(); ++i) {
         indegree[g.flat_adj[i]].fetch_add(1, std::memory_order_relaxed);
@@ -260,6 +129,7 @@ std::vector<int> topological_sort_parallel_atomic(const std::vector<std::vector<
     std::vector<int> frontier;
     frontier.reserve(n);
     
+    // 4. Initial Scan
     #pragma omp parallel
     {
         std::vector<int> local_frontier;
@@ -276,12 +146,13 @@ std::vector<int> topological_sort_parallel_atomic(const std::vector<std::vector<
     std::vector<int> order;
     order.reserve(n);
     
-    const int PARALLEL_THRESHOLD = 2048;  // Lower threshold
+    const int PARALLEL_THRESHOLD = 2048; 
     
     while (!frontier.empty()) {
         order.insert(order.end(), frontier.begin(), frontier.end());
         
         if (frontier.size() >= PARALLEL_THRESHOLD) {
+            // --- PARALLEL PATH ---
             const int num_threads = omp_get_max_threads();
             std::vector<std::vector<int>> thread_next(num_threads);
             
@@ -290,22 +161,22 @@ std::vector<int> topological_sort_parallel_atomic(const std::vector<std::vector<
                 int tid = omp_get_thread_num();
                 thread_next[tid].reserve(frontier.size() / num_threads + 128);
                 
-                // Dynamic scheduling with smaller chunks for better load balance
+                // Dynamic schedule handles uneven workloads (power-law graphs)
                 #pragma omp for schedule(dynamic, 32) nowait
                 for (size_t i = 0; i < frontier.size(); ++i) {
                     int u = frontier[i];
                     int start = g.row_offsets[u];
                     int end = g.row_offsets[u+1];
                     
-                    // Process in small batches to improve locality
                     for (int j = start; j < end; ++j) {
                         int v = g.flat_adj[j];
                         
-                        // Aggressive prefetching
+                        // Prefetch 'write' intent for future neighbors
                         if (j + 4 < end) {
                             _mm_prefetch((const char*)&indegree[g.flat_adj[j+4]], _MM_HINT_T0);
                         }
                         
+                        // Relaxed ordering is sufficient for correctness and fastest
                         if (indegree[v].fetch_sub(1, std::memory_order_relaxed) == 1) {
                             thread_next[tid].push_back(v);
                         }
@@ -313,6 +184,7 @@ std::vector<int> topological_sort_parallel_atomic(const std::vector<std::vector<
                 }
             }
             
+            // Merge thread-local results
             std::vector<int> next_frontier;
             for (const auto& local : thread_next) {
                 next_frontier.insert(next_frontier.end(), local.begin(), local.end());
@@ -320,137 +192,22 @@ std::vector<int> topological_sort_parallel_atomic(const std::vector<std::vector<
             frontier = std::move(next_frontier);
             
         } else {
+            // --- SERIAL FALLBACK (Small Frontier) ---
             std::vector<int> next_frontier;
-            
             for (int u : frontier) {
                 int start = g.row_offsets[u];
                 int end = g.row_offsets[u+1];
-                
                 for (int j = start; j < end; ++j) {
                     int v = g.flat_adj[j];
-                    
-                    if (j + 8 < end) {
-                        _mm_prefetch((const char*)&indegree[g.flat_adj[j+8]], _MM_HINT_T0);
-                    }
-                    
+                    if (j + 8 < end) _mm_prefetch((const char*)&indegree[g.flat_adj[j+8]], _MM_HINT_T0);
                     if (indegree[v].fetch_sub(1, std::memory_order_relaxed) == 1) {
                         next_frontier.push_back(v);
                     }
                 }
             }
-            
             frontier = std::move(next_frontier);
         }
     }
-    
-    return order;
-}
-
-// =============================================================================
-// PARALLEL V3: BATCHED UPDATES (New Approach)
-// Batch atomic updates to reduce contention
-// =============================================================================
-std::vector<int> topological_sort_parallel_batched(const std::vector<std::vector<int>>& raw_adj) {
-    CSRGraph g = convert_to_csr(raw_adj, true);
-    int n = g.n;
-    
-    std::vector<std::atomic<int>> indegree(n);
-    
-    #pragma omp parallel for schedule(static)
-    for (int i = 0; i < n; ++i) {
-        indegree[i].store(0, std::memory_order_relaxed);
-    }
-    
-    #pragma omp parallel for schedule(static)
-    for (size_t i = 0; i < g.flat_adj.size(); ++i) {
-        indegree[g.flat_adj[i]].fetch_add(1, std::memory_order_relaxed);
-    }
-    
-    std::vector<int> frontier;
-    frontier.reserve(n);
-    
-    #pragma omp parallel
-    {
-        std::vector<int> local_frontier;
-        #pragma omp for schedule(static) nowait
-        for (int i = 0; i < n; ++i) {
-            if (indegree[i].load(std::memory_order_relaxed) == 0) {
-                local_frontier.push_back(i);
-            }
-        }
-        #pragma omp critical
-        frontier.insert(frontier.end(), local_frontier.begin(), local_frontier.end());
-    }
-    
-    std::vector<int> order;
-    order.reserve(n);
-    
-    const int PARALLEL_THRESHOLD = 2048;
-    const int BATCH_SIZE = 256;  // Process in batches
-    
-    while (!frontier.empty()) {
-        order.insert(order.end(), frontier.begin(), frontier.end());
-        
-        if (frontier.size() >= PARALLEL_THRESHOLD) {
-            const int num_threads = omp_get_max_threads();
-            std::vector<std::vector<int>> thread_next(num_threads);
-            
-            #pragma omp parallel
-            {
-                int tid = omp_get_thread_num();
-                thread_next[tid].reserve(frontier.size() / num_threads + 128);
-                
-                // Process frontier in batches
-                #pragma omp for schedule(dynamic, 1)
-                for (size_t batch_start = 0; batch_start < frontier.size(); batch_start += BATCH_SIZE) {
-                    size_t batch_end = std::min(batch_start + BATCH_SIZE, frontier.size());
-                    
-                    for (size_t i = batch_start; i < batch_end; ++i) {
-                        int u = frontier[i];
-                        int start = g.row_offsets[u];
-                        int end = g.row_offsets[u+1];
-                        
-                        for (int j = start; j < end; ++j) {
-                            int v = g.flat_adj[j];
-                            
-                            if (j + 4 < end) {
-                                _mm_prefetch((const char*)&indegree[g.flat_adj[j+4]], _MM_HINT_T0);
-                            }
-                            
-                            if (indegree[v].fetch_sub(1, std::memory_order_relaxed) == 1) {
-                                thread_next[tid].push_back(v);
-                            }
-                        }
-                    }
-                }
-            }
-            
-            std::vector<int> next_frontier;
-            for (const auto& local : thread_next) {
-                next_frontier.insert(next_frontier.end(), local.begin(), local.end());
-            }
-            frontier = std::move(next_frontier);
-            
-        } else {
-            std::vector<int> next_frontier;
-            
-            for (int u : frontier) {
-                int start = g.row_offsets[u];
-                int end = g.row_offsets[u+1];
-                
-                for (int j = start; j < end; ++j) {
-                    int v = g.flat_adj[j];
-                    
-                    if (indegree[v].fetch_sub(1, std::memory_order_relaxed) == 1) {
-                        next_frontier.push_back(v);
-                    }
-                }
-            }
-            
-            frontier = std::move(next_frontier);
-        }
-    }
-    
     return order;
 }
 
@@ -460,13 +217,10 @@ std::vector<int> topological_sort_parallel_batched(const std::vector<std::vector
 std::vector<std::vector<int>> generate_easy_dag(int n, int edges_per_node) {
     std::vector<std::vector<int>> adj(n);
     #pragma omp parallel for schedule(static)
-    for (int u = 0; u < n; ++u) {
-        for (int i = 1; i <= edges_per_node; ++i) {
-            if (u + i < n) {
+    for (int u = 0; u < n; ++u)
+        for (int i = 1; i <= edges_per_node; ++i)
+            if (u + i < n)
                 adj[u].push_back(u + i);
-            }
-        }
-    }
     return adj;
 }
 
@@ -476,18 +230,12 @@ std::vector<std::vector<int>> generate_challenging_dag(int n, int avg_edges_per_
 
     for (int u = 0; u < n; ++u) {
         if (u + 1 >= n) continue;
-
         std::uniform_int_distribution<int> dist(u + 1, n - 1);
         std::vector<int> neighbors;
         neighbors.reserve(avg_edges_per_node);
-
-        for (int i = 0; i < avg_edges_per_node; ++i) {
-            neighbors.push_back(dist(gen));
-        }
-
+        for (int i = 0; i < avg_edges_per_node; ++i) neighbors.push_back(dist(gen));
         std::sort(neighbors.begin(), neighbors.end());
         neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
-
         adj[u] = neighbors;
     }
     return adj;
@@ -496,31 +244,49 @@ std::vector<std::vector<int>> generate_challenging_dag(int n, int avg_edges_per_
 std::vector<std::vector<int>> generate_wide_frontier_dag(int n, int avg_edges_per_node, double source_node_ratio = 0.1) {
     std::vector<std::vector<int>> adj(n);
     std::mt19937 gen(1337);
-
     int first_non_source_node = static_cast<int>(n * source_node_ratio);
     if (first_non_source_node <= 0) first_non_source_node = 1;
 
     for (int u = first_non_source_node; u < n; ++u) {
         if (u + 1 >= n) continue;
-
         std::uniform_int_distribution<int> dist(u + 1, n - 1);
         std::vector<int> neighbors;
         neighbors.reserve(avg_edges_per_node);
-
-        for (int i = 0; i < avg_edges_per_node; ++i) {
-            neighbors.push_back(dist(gen));
-        }
-
+        for (int i = 0; i < avg_edges_per_node; ++i) neighbors.push_back(dist(gen));
         std::sort(neighbors.begin(), neighbors.end());
         neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
-
         adj[u] = neighbors;
     }
     return adj;
 }
 
+std::vector<std::vector<int>> generate_disjoint_clusters(int n, int edges_per_node) {
+    std::vector<std::vector<int>> adj(n);
+    int num_clusters = 8; // Match thread count approx
+    int nodes_per_cluster = n / num_clusters;
+
+    #pragma omp parallel for
+    for (int c = 0; c < num_clusters; ++c) {
+        int start = c * nodes_per_cluster;
+        int end = start + nodes_per_cluster;
+        std::mt19937 gen(1337 + c); 
+
+        for (int u = start; u < end; ++u) {
+            if (u + 1 >= end) continue;
+            std::uniform_int_distribution<int> dist(u + 1, end - 1);
+            std::vector<int> neighbors;
+            for (int i = 0; i < edges_per_node; ++i) neighbors.push_back(dist(gen));
+            
+            std::sort(neighbors.begin(), neighbors.end());
+            neighbors.erase(std::unique(neighbors.begin(), neighbors.end()), neighbors.end());
+            adj[u] = neighbors;
+        }
+    }
+    return adj;
+}
+
 // =============================================================================
-// BENCHMARKING
+// BENCHMARKING HARNESS
 // =============================================================================
 void run_benchmark(const std::string& version,
                    const std::string& graph_name,
@@ -533,67 +299,93 @@ void run_benchmark(const std::string& version,
     std::cout << "--- " << description << " ---\n";
     std::cout << "---------------------------------------------------------\n";
 
-    auto start_time = std::chrono::high_resolution_clock::now();
-    auto result = func(adj);
-    auto end_time = std::chrono::high_resolution_clock::now();
-    
-    std::chrono::duration<double> duration = end_time - start_time;
+    // 1. Warmup Run (Executes but doesn't count time)
+    std::cout << "Warming up...\r" << std::flush;
+    volatile size_t dummy = func(adj).size(); 
 
-    std::cout << version << " completed in: "
+    // 2. Average of 3 Runs
+    int iterations = 3;
+    double total_time = 0;
+    std::cout << "Benchmarking... (" << iterations << " iterations)\n";
+
+    for(int i=0; i<iterations; ++i) {
+        auto start_time = std::chrono::high_resolution_clock::now();
+        auto result = func(adj);
+        auto end_time = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> duration = end_time - start_time;
+        total_time += duration.count();
+    }
+
+    std::cout << version << " Average Time: "
               << std::fixed << std::setprecision(4)
-              << duration.count() << " seconds.\n";
-    std::cout << "Sorted " << result.size() << " nodes.\n\n";
+              << (total_time / iterations) << " seconds.\n\n";
 }
 
-int main() { 
+void print_usage(const char* prog_name) {
+    std::cout << "Usage: " << prog_name << " <algo> <graph>\n";
+    std::cout << "  <algo>:  serial, parallel\n";
+    std::cout << "  <graph>: easy, narrow, wide, disjoint, dense\n";
+}
+
+int main(int argc, char* argv[]) {
+    if (argc != 3) {
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    std::string algo = argv[1];
+    std::string graph_type = argv[2];
+
     omp_set_num_threads(8);
     
-    int num_nodes = 20000000;  
-    int edges_per_node = 15;
+    // Default Parameters (20M nodes)
+    int num_nodes = 20000000;
+    int edges = 15;
 
-    std::cout << "=============================================================\n";
-    std::cout << "TOPOLOGICAL SORT - REVISED COMPARISON\n";
-    std::cout << "=============================================================\n";
-    std::cout << "Running with " << omp_get_max_threads() << " threads\n";
-    std::cout << "Nodes: " << num_nodes << ", Avg edges/node: " << edges_per_node << "\n\n";
-
-    // Test 1: Sequential Graph
-    {
-        std::cout << "\n### TEST 1: SEQUENTIAL GRAPH ###\n\n";
-        
-        auto adj_easy = generate_easy_dag(num_nodes, edges_per_node);
-        run_benchmark("SERIAL", "Sequential", "Baseline", adj_easy, topological_sort_serial);
-        run_benchmark("PARALLEL (Atomic)", "Sequential", "Optimized atomics", adj_easy, topological_sort_parallel_atomic);
-        run_benchmark("PARALLEL (Batched)", "Sequential", "Batched updates", adj_easy, topological_sort_parallel_batched);
+    // Special Parameter Logic
+    if (graph_type == "dense") {
+        num_nodes = 2000000; // Less nodes
+        edges = 100;         // More edges (Compute heavy)
     }
 
-    // Test 2: Narrow Frontier
-    {
-        std::cout << "\n### TEST 2: NARROW FRONTIER ###\n\n";
-        
-        auto adj_challenge = generate_challenging_dag(num_nodes, edges_per_node);
-        run_benchmark("SERIAL", "Narrow", "Baseline", adj_challenge, topological_sort_serial);
-        run_benchmark("PARALLEL (Atomic)", "Narrow", "Optimized atomics", adj_challenge, topological_sort_parallel_atomic);
-        run_benchmark("PARALLEL (Batched)", "Narrow", "Batched updates", adj_challenge, topological_sort_parallel_batched);
+    std::vector<std::vector<int>> adj;
+    std::string desc;
+
+    std::cout << "Generating " << graph_type << " graph with " << num_nodes 
+              << " nodes and " << edges << " edges/node...\n";
+
+    // Graph Generation Selection
+    if (graph_type == "easy") {
+        adj = generate_easy_dag(num_nodes, edges);
+        desc = "Linear (Best Case)";
+    } else if (graph_type == "narrow") {
+        adj = generate_challenging_dag(num_nodes, edges);
+        desc = "Random (Avg Case)";
+    } else if (graph_type == "wide") {
+        adj = generate_wide_frontier_dag(num_nodes, edges);
+        desc = "Random (Wide Frontier)";
+    } else if (graph_type == "disjoint") {
+        adj = generate_disjoint_clusters(num_nodes, edges);
+        desc = "Clusters (No False Sharing)";
+    } else if (graph_type == "dense") {
+        adj = generate_challenging_dag(num_nodes, edges);
+        desc = "Dense (Atomic Stress Test)";
+    } else {
+        std::cerr << "Unknown graph type: " << graph_type << "\n";
+        return 1;
     }
 
-    // Test 3: Wide Frontier
-    {
-        std::cout << "\n### TEST 3: WIDE FRONTIER ###\n\n";
-        
-        auto adj_wide = generate_wide_frontier_dag(num_nodes, edges_per_node);
-        run_benchmark("SERIAL", "Wide", "Baseline", adj_wide, topological_sort_serial);
-        run_benchmark("PARALLEL (Atomic)", "Wide", "Optimized atomics", adj_wide, topological_sort_parallel_atomic);
-        run_benchmark("PARALLEL (Batched)", "Wide", "Batched updates", adj_wide, topological_sort_parallel_batched);
+    // Algorithm Execution
+    if (algo == "serial") {
+        run_benchmark("SERIAL", graph_type, desc, adj, topological_sort_serial);
+    } 
+    else if (algo == "parallel") {
+        run_benchmark("PARALLEL", graph_type, desc, adj, topological_sort_parallel);
+    } 
+    else {
+        std::cerr << "Unknown algorithm: " << algo << "\n";
+        return 1;
     }
-    
-    std::cout << "\n=============================================================\n";
-    std::cout << "RECOMMENDATION:\n";
-    std::cout << "=============================================================\n";
-    std::cout << "BEST SERIAL: topological_sort_serial\n";
-    std::cout << "BEST PARALLEL: topological_sort_parallel_atomic or batched\n";
-    std::cout << "(whichever performs better on your wide frontier test)\n";
-    std::cout << "=============================================================\n";
 
     return 0;
 }
