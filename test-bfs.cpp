@@ -173,17 +173,17 @@ int main() {
         run_benchmark_parallel("Best Case (Parallel)", "Cache-friendly DAG", adj_easy);
     }
 
-    // Test 2
-    {
-        auto adj_challenge = generate_challenging_dag(num_nodes, edges_per_node);
-        run_benchmark_parallel("Narrow Frontier (Parallel)", "Serial workflow DAG", adj_challenge);
-    }
+    // // Test 2
+    // {
+    //     auto adj_challenge = generate_challenging_dag(num_nodes, edges_per_node);
+    //     run_benchmark_parallel("Narrow Frontier (Parallel)", "Serial workflow DAG", adj_challenge);
+    // }
 
-    // Test 3
-    {
-        auto adj_wide = generate_wide_frontier_dag(num_nodes, edges_per_node);
-        run_benchmark_parallel("Wide Frontier (Parallel)", "High parallelism DAG", adj_wide);
-    }
+    // // Test 3
+    // {
+    //     auto adj_wide = generate_wide_frontier_dag(num_nodes, edges_per_node);
+    //     run_benchmark_parallel("Wide Frontier (Parallel)", "High parallelism DAG", adj_wide);
+    // }
 
     return 0;
 }
