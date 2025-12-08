@@ -1,7 +1,14 @@
-// parallel_topo.cpp
-// Compile: g++ -O3 -g -march=native -fopenmp parallel_topo.cpp -o parallel_topo
-// Usage: OMP_NUM_THREADS=4 ./parallel_topo <graph_file>
-// VTune: vtune -collect hotspots -- env OMP_NUM_THREADS=4 ./parallel_topo graph_wide.bin
+// parallel_topo_vtune.cpp
+// VTUNE-READY VERSION: Separates I/O from algorithm for clean profiling
+// Compile: g++ -O3 -g -march=native -fopenmp parallel_topo_vtune.cpp -o parallel_topo_vtune
+// Usage: OMP_NUM_THREADS=8 ./parallel_topo_vtune <graph_file>
+//
+// PROFILING WORKFLOW:
+// 1. Run: OMP_NUM_THREADS=8 ./parallel_topo_vtune graph_wide.bin
+// 2. Program loads data and prints "READY FOR VTUNE - PID: xxxxx"
+// 3. Attach VTune: vtune -collect hotspots -target-pid xxxxx
+// 4. Press Enter in the original terminal to start algorithm
+// 5. VTune captures ONLY pure algorithm performance (no I/O pollutants)
 
 #include <iostream>
 #include <vector>
@@ -12,6 +19,7 @@
 #include <omp.h>
 #include <immintrin.h>
 #include <algorithm>
+#include <unistd.h>  // for getpid()
 
 // =============================================================================
 // CSR STRUCTURE
@@ -23,7 +31,7 @@ struct CSRGraph {
 };
 
 // =============================================================================
-// GRAPH LOADING
+// GRAPH LOADING (NOT PROFILED)
 // =============================================================================
 std::vector<std::vector<int>> load_graph_binary(const std::string& filename) {
     std::ifstream in(filename, std::ios::binary);
@@ -52,7 +60,7 @@ std::vector<std::vector<int>> load_graph_binary(const std::string& filename) {
 }
 
 // =============================================================================
-// CSR CONVERSION
+// CSR CONVERSION (NOT PROFILED)
 // =============================================================================
 CSRGraph convert_to_csr(const std::vector<std::vector<int>>& adj) {
     int n = adj.size();
@@ -79,7 +87,7 @@ CSRGraph convert_to_csr(const std::vector<std::vector<int>>& adj) {
 }
 
 // =============================================================================
-// PARALLEL TOPOLOGICAL SORT (OPTIMIZED)
+// PARALLEL TOPOLOGICAL SORT (THIS IS WHAT VTUNE WILL PROFILE)
 // =============================================================================
 std::vector<int> topological_sort_parallel(const CSRGraph& g) {
     int n = g.n;
@@ -196,7 +204,7 @@ std::vector<int> topological_sort_parallel(const CSRGraph& g) {
 }
 
 // =============================================================================
-// MAIN - PURE ALGORITHM BENCHMARK
+// MAIN - VTUNE-READY: SEPARATES SETUP FROM ALGORITHM
 // =============================================================================
 int main(int argc, char* argv[]) {
     if (argc != 2) {
@@ -209,14 +217,17 @@ int main(int argc, char* argv[]) {
     int num_threads = omp_get_max_threads();
     
     std::cout << "=================================================\n";
-    std::cout << "PARALLEL TOPOLOGICAL SORT\n";
+    std::cout << "PARALLEL TOPOLOGICAL SORT (VTUNE-READY)\n";
     std::cout << "=================================================\n";
     std::cout << "Input: " << input_file << "\n";
     std::cout << "Threads: " << num_threads << "\n";
     std::cout << "=================================================\n\n";
     
-    // PHASE 1: Load graph (not timed)
-    std::cout << "[1/3] Loading graph..." << std::flush;
+    // =========================================================================
+    // PHASE 1: SETUP (NOT PROFILED) - Load and prepare data
+    // =========================================================================
+    std::cout << "[SETUP PHASE - NOT PROFILED]\n";
+    std::cout << "Loading graph..." << std::flush;
     auto load_start = std::chrono::high_resolution_clock::now();
     auto adj = load_graph_binary(input_file);
     auto load_end = std::chrono::high_resolution_clock::now();
@@ -224,10 +235,7 @@ int main(int argc, char* argv[]) {
               << std::chrono::duration<double>(load_end - load_start).count() 
               << "s)\n";
     
-    std::cout << "  Loaded " << adj.size() << " nodes\n";
-    
-    // PHASE 2: Convert to CSR (not timed)
-    std::cout << "[2/3] Converting to CSR..." << std::flush;
+    std::cout << "Converting to CSR..." << std::flush;
     auto csr_start = std::chrono::high_resolution_clock::now();
     auto g = convert_to_csr(adj);
     auto csr_end = std::chrono::high_resolution_clock::now();
@@ -235,14 +243,32 @@ int main(int argc, char* argv[]) {
               << std::chrono::duration<double>(csr_end - csr_start).count() 
               << "s)\n";
     
-    std::cout << "  Total edges: " << g.flat_adj.size() << "\n\n";
+    std::cout << "  Nodes: " << g.n << "\n";
+    std::cout << "  Edges: " << g.flat_adj.size() << "\n\n";
     
     // Free original adjacency list
     adj.clear();
     adj.shrink_to_fit();
     
-    // PHASE 3: Run algorithm (TIMED - This is what VTune should profile)
-    std::cout << "[3/3] Running topological sort...\n";
+    // =========================================================================
+    // WAIT FOR VTUNE ATTACHMENT
+    // =========================================================================
+    std::cout << "=================================================\n";
+    std::cout << "✓ READY FOR VTUNE PROFILING\n";
+    std::cout << "=================================================\n";
+    std::cout << "Process ID: " << getpid() << "\n\n";
+    std::cout << "To attach VTune (in another terminal):\n";
+    std::cout << "  vtune -collect hotspots -target-pid " << getpid() << "\n";
+    std::cout << "  vtune -collect threading -target-pid " << getpid() << "\n\n";
+    std::cout << "Press ENTER when ready to start algorithm...\n";
+    std::cout << "=================================================\n";
+    std::cin.get();
+    
+    // =========================================================================
+    // PHASE 2: ALGORITHM (VTUNE PROFILES THIS)
+    // =========================================================================
+    std::cout << "\n[ALGORITHM PHASE - VTUNE PROFILES THIS]\n";
+    std::cout << "Running topological sort (5 iterations)...\n";
     std::cout << "------------------------------------------------\n";
     
     const int NUM_RUNS = 5;
@@ -251,8 +277,11 @@ int main(int argc, char* argv[]) {
     for (int run = 0; run < NUM_RUNS; ++run) {
         auto start = std::chrono::high_resolution_clock::now();
         
-        // THE ACTUAL ALGORITHM - VTUNE PROFILE THIS
+        // =====================================================================
+        // THE PURE ALGORITHM - THIS IS WHAT VTUNE SEES
+        // =====================================================================
         auto result = topological_sort_parallel(g);
+        // =====================================================================
         
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> duration = end - start;
@@ -273,7 +302,7 @@ int main(int argc, char* argv[]) {
     for (double t : times) avg_time += t;
     avg_time /= times.size();
     
-    std::cout << "RESULTS:\n";
+    std::cout << "\nRESULTS:\n";
     std::cout << "  Best:    " << std::fixed << std::setprecision(4) << min_time << "s\n";
     std::cout << "  Worst:   " << max_time << "s\n";
     std::cout << "  Average: " << avg_time << "s\n";
