@@ -44,25 +44,19 @@ Serial implementation is preferable for:
 ├── graph_generator.cpp         # Generates test DAGs in binary format
 ├── serial_kahn.cpp             # Optimized serial baseline (includes I/O)
 ├── parallel_kahn.cpp           # Parallel implementation (includes I/O)
-├── serial_kahn_vtune.cpp       # VTune-ready serial (clean profiling)
-├── parallel_kahn_vtune.cpp     # VTune-ready parallel (clean profiling)
-├── serial_topo                 # Compiled serial binary
-├── parallel_topo               # Compiled parallel binary
-├── serial_topo_vtune           # Compiled VTune-ready serial
-├── parallel_topo_vtune         # Compiled VTune-ready parallel
+├── serial_kahn                 # Compiled serial binary
+├── parallel_kahn               # Compiled parallel binary
 ├── graph_gen                   # Compiled graph generator
 └── README.md                   # This file
 ```
 
-**About the VTune-Ready Versions:**
+**About VTune:**
 
-The `*_vtune.cpp` files are specifically designed for research-grade profiling. They:
+The two cpp files can be used for research-grade profiling. They:
 - Load the graph and convert to CSR format (setup phase)
 - **Pause and wait** for you to attach VTune Profiler
-- Run the pure algorithm 5 times after you press Enter
+- Run the pure algorithm 5 times 
 - Ensure VTune captures **only** algorithm hotspots, with zero I/O "pollutants"
-
-Use the regular versions for general benchmarking and the VTune versions when you need clean profiling data for research or mentor presentations.
 
 ## Building
 
@@ -84,16 +78,7 @@ g++ -O3 -march=native -g serial_kahn.cpp -o serial_topo
 # Parallel version (includes I/O - convenient for benchmarking)
 g++ -O3 -march=native -fopenmp -g parallel_kahn.cpp -o parallel_topo
 
-# VTune-ready serial (clean profiling - no I/O pollutants)
-g++ -O3 -march=native -g serial_kahn_vtune.cpp -o serial_topo_vtune
-
-# VTune-ready parallel (clean profiling - no I/O pollutants)
-g++ -O3 -march=native -fopenmp -g parallel_kahn_vtune.cpp -o parallel_topo_vtune
 ```
-
-**Which version should I use?**
-- Use regular versions (`serial_topo`, `parallel_topo`) for quick benchmarking and comparisons
-- Use VTune versions (`*_vtune`) when you need clean profiling data without I/O overhead
 
 ## Usage
 
@@ -122,7 +107,7 @@ g++ -O3 -march=native -fopenmp -g parallel_kahn_vtune.cpp -o parallel_topo_vtune
 ### 2. Run Serial Baseline
 
 ```bash
-./serial_topo <graph_file.bin>
+./serial_kahn <graph_file.bin>
 ```
 
 ### 3. Run Parallel Version
@@ -130,10 +115,10 @@ g++ -O3 -march=native -fopenmp -g parallel_kahn_vtune.cpp -o parallel_topo_vtune
 ```bash
 # Set thread count (default: all available cores)
 export OMP_NUM_THREADS=8
-./parallel_topo <graph_file.bin>
+./parallel_kahn <graph_file.bin>
 
 # Or inline
-OMP_NUM_THREADS=16 ./parallel_topo graph_wide.bin
+OMP_NUM_THREADS=16 ./parallel_kahn graph_wide.bin
 ```
 
 ### Sample Output
@@ -212,55 +197,10 @@ This format provides:
 - Compact storage (typically 30-40% smaller than text format)
 - Direct memory mapping capability
 
-## Performance Tuning
-
-### VTune-Ready Profiling (Recommended for Clean Analysis)
-
-For research or mentor presentations where you want **zero I/O pollutants** in your profiling data:
-
-```bash
-# Terminal 1: Start the VTune-ready version
-OMP_NUM_THREADS=8 ./parallel_topo_vtune graph_wide.bin
-
-# Wait for output:
-# =================================================
-# ✓ READY FOR VTUNE PROFILING
-# =================================================
-# Process ID: 12345
-# 
-# To attach VTune (in another terminal):
-#   vtune -collect hotspots -target-pid 12345
-#
-# Press ENTER when ready to start algorithm...
-# =================================================
-
-# Terminal 2: Attach VTune to the waiting process
-vtune -collect hotspots -target-pid 12345
-
-# Or for threading analysis:
-vtune -collect threading -target-pid 12345
-
-# Terminal 1: Once VTune is attached, press Enter
-# The algorithm will run 5 iterations with VTune capturing everything
-```
-
-**What you get:**
-- ✓ VTune profiles **only** the 5 algorithm iterations
-- ✓ Zero overhead from file I/O
-- ✓ Zero overhead from CSR conversion
-- ✓ Pure algorithm hotspots: atomics, frontiers, indegree updates
-- ✓ Clean data suitable for research papers and presentations
-
-**Why this matters:**
-Without the VTune-ready versions, profiling captures graph loading (~2-3 seconds) and CSR conversion (~1-2 seconds) along with the algorithm. This "pollutes" your hotspot analysis with file I/O and memory allocation that aren't part of the actual algorithm you're optimizing. Your mentor specifically requested this separation for accurate performance analysis.
-
-### Alternative: Profile Complete Run (includes I/O overhead)
-
-If you just want quick profiling including all phases:
 
 ```bash
 # This will profile everything: loading, conversion, AND algorithm
-vtune -collect hotspots -- env OMP_NUM_THREADS=8 ./parallel_topo graph_wide.bin
+vtune -collect hotspots -- env OMP_NUM_THREADS=8 ./parallel_kahn graph_wide.bin
 ```
 
 ### Thread Count
@@ -270,7 +210,7 @@ Test different thread counts to find optimal performance for your hardware:
 ```bash
 for t in 1 2 4 8 16; do
     echo "Testing with $t threads:"
-    OMP_NUM_THREADS=$t ./parallel_topo graph_wide.bin
+    OMP_NUM_THREADS=$t ./parallel_kahn graph_wide.bin
 done
 ```
 
@@ -281,33 +221,8 @@ For NUMA systems, pin threads to specific cores:
 ```bash
 export OMP_PLACES=cores
 export OMP_PROC_BIND=close
-OMP_NUM_THREADS=8 ./parallel_topo graph_wide.bin
+OMP_NUM_THREADS=8 ./parallel_kahn graph_wide.bin
 ```
-
-### Profiling with Intel VTune
-
-The implementation is designed for "attach process" profiling to isolate pure algorithm performance:
-
-**Option 1: Attach to Running Process**
-```bash
-# Terminal 1: Start the program (it will pause for attachment)
-OMP_NUM_THREADS=8 ./parallel_topo graph_wide.bin
-
-# Terminal 2: Attach VTune to the running process
-vtune -collect hotspots -target-pid $(pgrep parallel_topo)
-```
-
-**Option 2: Profile Entire Run (includes I/O)**
-```bash
-# Collect hotspots (note: includes load/CSR conversion overhead)
-vtune -collect hotspots -- env OMP_NUM_THREADS=8 ./parallel_topo graph_wide.bin
-
-# Collect threading analysis
-vtune -collect threading -- env OMP_NUM_THREADS=8 ./parallel_topo graph_wide.bin
-```
-
-**Note:** The current implementation runs 5 iterations of the algorithm after loading data, allowing you to attach during the algorithm phase and get clean profiling data without I/O "pollutants". For even cleaner profiling, see the "VTune-Ready Profiling" section below.
-
 ## Implementation Notes
 
 ### Why CSR Format?
