@@ -18,6 +18,12 @@
     <ClCompile Include="GPU.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+	<ClCompile Include="heatdissipation.cpp">
+		<Filter>Source Files</Filter>
+	</ClCompile>
+	<ClCompile Include="visualization.cpp">
+		<Filter>Source Files</Filter>
+	</ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="heat_kernel.cu">

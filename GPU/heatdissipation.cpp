@@ -40,38 +40,38 @@ void cpuHeatDissipation(float* input, float* output) {
     }
 }
 
-int main() {
-    size_t size = N * N * N * sizeof(float);
-    int numElements = N * N * N;
-
-    std::vector<float> h_in(numElements);
-    std::vector<float> h_out(numElements);
-
-    // initialize input array to zero
-    for (int i = 0; i < numElements; i++) h_in[i] = 0.0f;
-    
-    // set a hot spot in the center
-    int center = getIdx(N/2, N/2, N/2);
-    h_in[center] = 1000.0f; 
-    
-    std::cout << "Beginning cpu simulation: " << N << "x" << N << "x" << N << std::endl;
-
-    auto start = std::chrono::high_resolution_clock::now();
-
-    float* inPtr = h_in.data();
-    float* outPtr = h_out.data();
-
-    for (int i = 0; i < STEPS; i++) {
-        cpuHeatDissipation(inPtr, outPtr);
-        
-        std::swap(inPtr, outPtr);
-    }
-
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
-
-    std::cout << "Simulation finished." << std::endl;
-    std::cout << "Execution time (CPU): " << elapsed.count() << " seconds." << std::endl;
-    
-    return 0;
-}
+//int main() {
+//    size_t size = N * N * N * sizeof(float);
+//    int numElements = N * N * N;
+//
+//    std::vector<float> h_in(numElements);
+//    std::vector<float> h_out(numElements);
+//
+//    // initialize input array to zero
+//    for (int i = 0; i < numElements; i++) h_in[i] = 0.0f;
+//    
+//    // set a hot spot in the center
+//    int center = getIdx(N/2, N/2, N/2);
+//    h_in[center] = 1000.0f; 
+//    
+//    std::cout << "Beginning cpu simulation: " << N << "x" << N << "x" << N << std::endl;
+//
+//    auto start = std::chrono::high_resolution_clock::now();
+//
+//    float* inPtr = h_in.data();
+//    float* outPtr = h_out.data();
+//
+//    for (int i = 0; i < STEPS; i++) {
+//        cpuHeatDissipation(inPtr, outPtr);
+//        
+//        std::swap(inPtr, outPtr);
+//    }
+//
+//    auto end = std::chrono::high_resolution_clock::now();
+//    std::chrono::duration<double> elapsed = end - start;
+//
+//    std::cout << "Simulation finished." << std::endl;
+//    std::cout << "Execution time (CPU): " << elapsed.count() << " seconds." << std::endl;
+//    
+//    return 0;
+//}
