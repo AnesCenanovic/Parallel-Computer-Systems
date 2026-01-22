@@ -389,7 +389,7 @@ int main()
 {
     std::cout << "============================================================\n";
     std::cout << "=     CUDA HEAT DIFFUSION VISUALIZATION v2.0               =\n";
-    std::cout << "=     Professional Edition - GPU Accelerated               =\n";
+    std::cout << "=                GPU Accelerated                           =\n";
     std::cout << "============================================================\n\n";
 
     if (selectCudaDevice() < 0) return -1;
@@ -399,7 +399,7 @@ int main()
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
 
-    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Heat Diffusion - CUDA Professional", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Heat Diffusion - CUDA", nullptr, nullptr);
     if (!window) { glfwTerminate(); return -1; }
     glfwMakeContextCurrent(window);
 
