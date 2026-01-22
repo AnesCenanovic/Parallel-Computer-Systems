@@ -132,8 +132,8 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="GPU.cpp" />
-	<ClCompile Include="heatdissipation.cpp" />
-	<ClCompile Include="visualization.cpp" />
+    <ClCompile Include="heatdissipation.cpp" />
+    <ClCompile Include="visualization.cpp" />
   </ItemGroup>
   <ItemGroup>
     <CudaCompile Include="heat_kernel.cu" />
@@ -144,6 +144,9 @@
     <ClInclude Include="heat_kernel.cuh" />
     <ClInclude Include="render_kernel.cuh" />
     <ClInclude Include="visualization.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="GPU\main_enhanced.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
