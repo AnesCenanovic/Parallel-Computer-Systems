@@ -2,7 +2,7 @@
 #include <cmath>
 #include <chrono>
 #include <iomanip>
-
+#include <device_launch_parameters.h>
 #include <GL/glew.h>
 #include <GLFW/glfw3.h>
 
@@ -11,8 +11,8 @@
 
 #include "heat_kernel.cuh"
 
-const int WIDTH = 800;
-const int HEIGHT = 600;
+const int WIDTH = 1024;
+const int HEIGHT = 1024;
 
 // Simulation parameters
 float ALPHA = 0.2f;                 // Diffusion coefficient (adjustable)
@@ -206,14 +206,21 @@ void addRectHeatSource(float* temperature, int width, int height,
 int selectCudaDevice()
 {
     int deviceCount = 0;
-    if (cudaGetDeviceCount(&deviceCount) != cudaSuccess || deviceCount == 0) {
+    cudaError_t err = cudaGetDeviceCount(&deviceCount);
+
+    std::cout << "cudaGetDeviceCount returned: " << cudaGetErrorString(err) << "\n";
+    std::cout << "Device count: " << deviceCount << "\n";
+
+    if (err != cudaSuccess || deviceCount == 0) {
         std::cerr << "No CUDA devices found\n";
+        std::cerr << "Error code: " << err << "\n";
         return -1;
     }
 
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
     std::cout << "Device: " << prop.name << "\n";
+    std::cout << "Compute Capability: " << prop.major << "." << prop.minor << "\n";
     cudaSetDevice(0);
     return 0;
 }
@@ -339,7 +346,7 @@ void simulateAndVisualize()
 
     if (!isPaused) {
         applyScenarioHeatSources(grid, block);
-        heatStep<<<grid, block>>>(d_temp_current, d_temp_next, WIDTH, HEIGHT, ALPHA);
+        heatStepShared<<<grid, block>>>(d_temp_current, d_temp_next, WIDTH, HEIGHT, ALPHA);
         
         float* temp = d_temp_current;
         d_temp_current = d_temp_next;
@@ -359,7 +366,7 @@ void updatePerformanceMetrics(double currentTime)
 {
     frameCount++;
     if (currentTime - lastFpsTime >= 0.5) {
-        currentFps = frameCount / (currentTime - lastFpsTime);
+        currentFps = frameCount / (currentTime - lastFpsTime);__global__ void heatStepShared(const float* current, float* next, int width, int height, float alpha);
         frameCount = 0;
         lastFpsTime = currentTime;
         
@@ -392,36 +399,69 @@ int main()
     std::cout << "=                GPU Accelerated                           =\n";
     std::cout << "============================================================\n\n";
 
-    if (selectCudaDevice() < 0) return -1;
+    if (selectCudaDevice() < 0) {
+        std::cout << "Press any key to exit...";
+        std::cin.get();
+        return -1;
+    }
 
-    if (!glfwInit()) return -1;
+    std::cout << "Initializing GLFW...\n";
+    if (!glfwInit()) {
+        std::cerr << "ERROR: Failed to initialize GLFW\n";
+        std::cout << "Press any key to exit...";
+        std::cin.get();
+        return -1;
+    }
+
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_COMPAT_PROFILE);
 
+    std::cout << "Creating window...\n";
     GLFWwindow* window = glfwCreateWindow(WIDTH, HEIGHT, "Heat Diffusion - CUDA", nullptr, nullptr);
-    if (!window) { glfwTerminate(); return -1; }
+    if (!window) {
+        std::cerr << "ERROR: Failed to create GLFW window\n";
+        glfwTerminate();
+        std::cout << "Press any key to exit...";
+        std::cin.get();
+        return -1;
+    }
     glfwMakeContextCurrent(window);
 
     glfwSetKeyCallback(window, keyCallback);
     glfwSetMouseButtonCallback(window, mouseButtonCallback);
     glfwSetCursorPosCallback(window, cursorPositionCallback);
 
+    std::cout << "Initializing GLEW...\n";
     glewExperimental = GL_TRUE;
-    if (glewInit() != GLEW_OK) return -1;
+    GLenum glewError = glewInit();
+    if (glewError != GLEW_OK) {
+        std::cerr << "ERROR: Failed to initialize GLEW: "
+            << glewGetErrorString(glewError) << "\n";
+        glfwTerminate();
+        std::cout << "Press any key to exit...";
+        std::cin.get();
+        return -1;
+    }
 
+    std::cout << "Setting up OpenGL...\n";
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
     glOrtho(0, WIDTH, 0, HEIGHT, -1, 1);
     glMatrixMode(GL_MODELVIEW);
     glViewport(0, 0, WIDTH, HEIGHT);
 
+    std::cout << "Initializing simulation...\n";
     initSimulation();
+
+    std::cout << "Creating PBO...\n";
     createPBO();
+
     printControls();
 
     lastFpsTime = glfwGetTime();
 
+    std::cout << "Starting main loop...\n";
     while (!glfwWindowShouldClose(window))
     {
         simulateAndVisualize();
@@ -434,6 +474,7 @@ int main()
         glfwPollEvents();
     }
 
+    std::cout << "Cleaning up...\n";
     if (cuda_pbo) cudaGraphicsUnregisterResource(cuda_pbo);
     if (pbo) glDeleteBuffers(1, &pbo);
     if (texture) glDeleteTextures(1, &texture);

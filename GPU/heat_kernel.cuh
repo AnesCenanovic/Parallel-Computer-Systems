@@ -8,3 +8,5 @@ void heatStep(const float* current, float* next, int width, int height, float al
 // Visualization kernel - converts temperature to color
 __global__
 void visualizeHeat(const float* temperature, uchar4* pixels, int width, int height, float minTemp, float maxTemp);
+
+__global__ void heatStepShared(const float* current, float* next, int width, int height, float alpha);

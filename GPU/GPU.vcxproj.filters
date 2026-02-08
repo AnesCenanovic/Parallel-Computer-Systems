@@ -35,7 +35,6 @@
     <CudaCompile Include="render_kernel.cu">
       <Filter>Source Files</Filter>
     </CudaCompile>
-    <CudaCompile Include="GPU\heat_main.cu" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="render_kernel.cuh">
@@ -47,5 +46,11 @@
     <ClInclude Include="visualization.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="GPU\main_enhanced.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
   </ItemGroup>
 </Project>
