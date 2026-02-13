@@ -64,6 +64,13 @@ GPU/
 - GLFW 3.x, GLEW 2.x libraries
 - Visual Studio 2022 (Windows) or GCC 7+ (Linux)
 
+#### 🚀 Pre-built Releases (Quick Start)
+If you do not wish to compile the project manually, you can download the standalone executable:
+1. Go to the [Releases](https://github.com/AnesCenanovic/Parallel-Computer-Systems/releases) page.
+2. Download the ZIP file containing the `.exe` and `.dll` files.
+3. **Important:** Keep `heat_sim.exe`, `glew32.dll`, and `glfw3.dll` in the same folder for the application to launch.
+
+
 #### Windows (Visual Studio 2022)
 
 1. Open the `.sln` file
